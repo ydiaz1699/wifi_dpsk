@@ -1,0 +1,11 @@
+{
+    "name": "IoTProtocol",
+    "version": "4.3.0",
+    "description": "Universal binary IoT protocol for ESP8266/ESP32 over UDP. Package V4.3 adds persistent BOOT_ID, strict LittleFS config with CRC16, HMAC provider integration, reliable delivery, deduplication and session-aware ACK handling; wire format remains V4.1 (0x41).",
+    "keywords": "iot, protocol, udp, sensor, binary, tlv, esp8266, esp32, crc16",
+    "authors": {
+        "name": "ydiaz1699"
+    },
+    "frameworks": "arduino",
+    "platforms": ["espressif8266", "espressif32"]
+}

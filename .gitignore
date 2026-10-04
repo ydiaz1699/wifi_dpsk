@@ -1,0 +1,30 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+*.pyc
+
+# Secretos reales (nunca versionar; usar secrets.h.template)
+secrets.h
+**/secrets.h
+
+# Build / binarios
+*.bin
+*.elf
+*.hex
+*.o
+*.a
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ESPHome
+esphome_satellites/.esphome/
+esphome_satellites/secrets.yaml
