@@ -86,15 +86,23 @@ script:
     then:
       - http_request.post:
           url: "http://${central_ip}/event"
-          headers:
+          # 'request_headers' es el nombre correcto en ESPHome 2024.x+ (la doc
+          # oficial lo cambió desde 'headers'). Content-Type lo fija igualmente
+          # la sintaxis json, pero lo dejamos explícito.
+          request_headers:
             Content-Type: application/json
-          body: !lambda |-
-            char buf[192];
-            snprintf(buf, sizeof(buf),
-              "{\"v\":1,\"src\":%d,\"boot\":%u,\"seq\":%u,\"code\":%d,\"val\":%d,\"dev_type\":%s}",
-              (int)${device_id_dec}, (unsigned)id(boot_counter), (unsigned)id(seq),
-              id(pending_code), id(pending_value), "${dev_type}");
-            return std::string(buf);
+          # json syntax 2 (ArduinoJson): envía NÚMEROS reales, no strings.
+          # Es la forma recomendada por la doc para enteros, y evita construir
+          # el JSON a mano con snprintf. src/boot/seq/code deben ser != 0 o el
+          # endpoint responde 400 (ver central/src/http_endpoint.cpp).
+          json: |-
+            root["v"] = 1;
+            root["src"] = ${device_id_dec};
+            root["boot"] = (int) id(boot_counter);
+            root["seq"] = (int) id(seq);
+            root["code"] = id(pending_code);
+            root["val"] = id(pending_value);
+            root["dev_type"] = ${dev_type};
           on_response:
             then:
               - lambda: |-

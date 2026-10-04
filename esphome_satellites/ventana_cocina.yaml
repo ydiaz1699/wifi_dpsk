@@ -16,11 +16,20 @@ substitutions:
   friendly_name: "Ventana Cocina"
   device_id_dec: "66"            # 0x42
   central_ip: "192.168.0.201"    # local_IP de central/src/config.cpp (puerto 80)
-  dev_type: "7"                  # DOOR_SENSOR (AlarmProfile)
+  dev_type: "7"                  # DOOR_SENSOR (AlarmProfile; no hay WINDOW_SENSOR)
   grace_seconds: "30s"
+  # Códigos de evento declarados AQUÍ, no heredados de alarm_codes.yaml.
+  # Motivo: ESPHome no propaga de forma fiable substitutions entre packages
+  # (varía por versión). alarm_codes.yaml queda como referencia del contrato
+  # completo, pero el nodo define los códigos que realmente usa, con los
+  # valores de AlarmProfile.h: WINDOW_OPEN=0x0B=11, WINDOW_CLOSE=0x0C=12.
+  EVENT_WINDOW_OPEN: "11"
+  EVENT_WINDOW_CLOSE: "12"
 
 packages:
-  codes:    !include common/alarm_codes.yaml
+  # alarm_codes.yaml NO se incluye como package: sus substitutions no se
+  # propagarían de forma fiable aquí. Los códigos usados se declaran en las
+  # substitutions de este nodo (arriba). alarm_codes.yaml queda como doc.
   base:     !include common/base.yaml
   failover: !include common/mqtt_failover.yaml
 
@@ -72,12 +81,14 @@ text_sensor:
   - platform: template
     name: "${friendly_name} Transporte"
     lambda: |-
+      // return std::string(...) explícito evita la ambigüedad de la lista
+      // de inicialización {"..."} que algunas versiones de ESPHome rechazan.
       switch (id(node_state)) {
-        case 0: return {"BOOT"};
-        case 1: return {"TRY_MQTT"};
-        case 2: return {"NORMAL (MQTT)"};
-        case 3: return {"GRACE"};
-        case 4: return {"EMERGENCY (HTTP)"};
-        default: return {"?"};
+        case 0: return std::string("BOOT");
+        case 1: return std::string("TRY_MQTT");
+        case 2: return std::string("NORMAL (MQTT)");
+        case 3: return std::string("GRACE");
+        case 4: return std::string("EMERGENCY (HTTP)");
+        default: return std::string("?");
       }
     update_interval: 10s
