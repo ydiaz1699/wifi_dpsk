@@ -1,0 +1,133 @@
+# pir_entrada.yaml — Nodo satélite ESPHome: PIR de movimiento + timbre.
+#
+# Hardware: ESP8266 D1 mini.
+#   - PIR (HC-SR501 / AM312) en D2, activo HIGH.
+#   - Pulsador de timbre en D5, activo LOW (INPUT_PULLUP + inverted).
+#     (D5 evita los pines de boot D3/D4; en D1 mini D5=GPIO14 es seguro.)
+#
+# Rol: en NORMAL publica por MQTT; si el broker cae > grace_seconds, conmuta
+# a HTTP contra el endpoint /event del central C++ (ver common/mqtt_failover.yaml).
+# El satélite NO decide si suena la bocina: eso lo resuelve el central con su
+# allowlist debeActivarBocina() (ver central/src/event_handler.cpp). Aquí solo
+# se detecta el evento físico y se envía MOTION / TIMBRE.
+#
+# device_id 2 (0x02) cae en el rango 0x02-0x1F ("nodos de entrada") de la
+# convencion de IoTProtocol.h; es la ubicacion natural de un sensor de entrada.
+# El central lo registra como PIR_SENSOR (AlarmProfile::DeviceType).
+#
+# CONTRATO verificado contra el firmware (no de memoria):
+#   - AlarmProfile.h            -> MOTION=0x01, TIMBRE=0x06, PIR_SENSOR=0x02
+#   - central/src/http_endpoint.cpp -> POST /event {src,boot,seq,code,val};
+#       rechaza 400 si src/boot/seq/code == 0; HTTP solo activo con auth
+#       DISABLED (en auth REQUIRED el endpoint se cierra y responde 403).
+#   - central/src/config.cpp    -> local_IP 192.168.0.201, puerto 80.
+#   - central/src/event_handler.cpp -> TIMBRE suena siempre; MOTION solo armado.
+#
+# Compilar/subir:  esphome run pir_entrada.yaml
+# Requiere esphome_satellites/secrets.yaml (ver secrets.yaml.example).
+
+substitutions:
+  node_name: "pir-entrada"
+  friendly_name: "PIR Entrada"
+  device_id_dec: "2"             # 0x02 — rango "nodos de entrada" (IoTProtocol.h)
+  central_ip: "192.168.0.201"    # local_IP de central/src/config.cpp (puerto 80)
+  dev_type: "2"                  # PIR_SENSOR (AlarmProfile::DeviceType)
+  grace_seconds: "30s"
+  # Códigos de evento declarados AQUÍ, no heredados de alarm_codes.yaml.
+  # Motivo (igual que ventana_cocina.yaml): ESPHome no propaga de forma fiable
+  # substitutions entre packages. alarm_codes.yaml queda como doc del contrato
+  # completo; el nodo declara solo los que usa, con los valores de AlarmProfile.h.
+  EVENT_MOTION: "1"    # 0x01
+  EVENT_TIMBRE: "6"    # 0x06
+
+packages:
+  # alarm_codes.yaml NO se incluye como package (ver nota arriba). Los códigos
+  # usados se declaran en las substitutions de este nodo. base.yaml aporta
+  # core/wifi/ota/api + globals de sesión; mqtt_failover.yaml aporta la máquina
+  # NORMAL/GRACE/EMERGENCY y los scripts send_mqtt / send_http.
+  base:     !include common/base.yaml
+  failover: !include common/mqtt_failover.yaml
+
+binary_sensor:
+  # --- PIR de movimiento ---
+  # delayed_on 200ms filtra picos de arranque del módulo PIR.
+  # delayed_off 5s evita re-disparos mientras el PIR mantiene HIGH durante su
+  # propio retardo interno (un solo paso = un solo evento MOTION).
+  - platform: gpio
+    id: pir
+    name: "${friendly_name} Movimiento"
+    device_class: motion
+    pin:
+      number: D2
+      mode:
+        input: true
+    filters:
+      - delayed_on: 200ms
+      - delayed_off: 5s
+    on_press:
+      then:
+        # 1) Fijar (code,value) ANTES de elegir transporte. seq se incrementa
+        #    aqui (en el flanco fisico), no en el envio, para que un reintento
+        #    del mismo flanco reuse el mismo seq y el central lo deduplique.
+        - lambda: |-
+            id(seq) += 1;
+            id(pending_code)  = ${EVENT_MOTION};
+            id(pending_value) = 1;
+        # 2) Elegir transporte segun el estado de la maquina de failover.
+        - if:
+            condition:
+              lambda: 'return id(node_state) == 2;'   # NORMAL
+            then:
+              - script.execute: send_mqtt
+        - if:
+            condition:
+              lambda: 'return id(node_state) == 4;'   # EMERGENCY
+            then:
+              - script.execute: send_http
+        # En BOOT/TRY_MQTT/GRACE el evento no se envia (best-effort documentado).
+
+  # --- Pulsador de timbre ---
+  # Activo LOW con pull-up interno; inverted:true -> pulsado=true.
+  # delayed_on 800ms antirrebote mecanico del pulsador.
+  - platform: gpio
+    id: timbre
+    name: "${friendly_name} Timbre"
+    pin:
+      number: D5
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 800ms
+    on_press:
+      then:
+        - lambda: |-
+            id(seq) += 1;
+            id(pending_code)  = ${EVENT_TIMBRE};
+            id(pending_value) = 1;
+        - if:
+            condition:
+              lambda: 'return id(node_state) == 2;'   # NORMAL
+            then:
+              - script.execute: send_mqtt
+        - if:
+            condition:
+              lambda: 'return id(node_state) == 4;'   # EMERGENCY
+            then:
+              - script.execute: send_http
+
+# Sensor de diagnostico opcional: expone el estado de la maquina a HA via API.
+text_sensor:
+  - platform: template
+    name: "${friendly_name} Transporte"
+    lambda: |-
+      switch (id(node_state)) {
+        case 0: return std::string("BOOT");
+        case 1: return std::string("TRY_MQTT");
+        case 2: return std::string("NORMAL (MQTT)");
+        case 3: return std::string("GRACE");
+        case 4: return std::string("EMERGENCY (HTTP)");
+        default: return std::string("?");
+      }
+    update_interval: 10s
