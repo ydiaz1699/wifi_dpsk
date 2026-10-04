@@ -1,0 +1,46 @@
+# alarm_codes.yaml — Contrato semántico compartido con el firmware C++.
+#
+# FUENTE DE VERDAD: lib/AlarmProfile/AlarmProfile.h del repo wifi_dpsk.
+# Estos valores NO se eligen libremente: deben coincidir byte a byte con
+# AlarmProfile::EventCode y AlarmProfile::DeviceType, porque el central C++
+# interpreta el campo "code" del POST /event con esos mismos enums
+# (ver central/src/event_handler.cpp -> esEventCodeConocido/debeActivarBocina).
+#
+# Se incluye con `packages:` o `<<:` en el YAML del nodo concreto. Un cambio
+# aquí sin cambiar AlarmProfile.h (o viceversa) rompe la interoperabilidad.
+#
+# EventCode (AlarmProfile.h):
+#   MOTION=0x01  DOOR_OPEN=0x02  DOOR_CLOSE=0x03  BUTTON_PRESS=0x04
+#   BUTTON_RELEASE=0x05  TIMBRE=0x06  SMOKE=0x07  FLOOD=0x08  TAMPER=0x09
+#   LOW_BATTERY=0x0A  WINDOW_OPEN=0x0B  WINDOW_CLOSE=0x0C  VIBRATION=0x0D
+#   GAS_DETECTED=0x0E
+#
+# DeviceType (AlarmProfile.h):
+#   CENTRAL=0x01 PIR_SENSOR=0x02 BUTTON=0x03 TEMP_SENSOR=0x04 RELAY=0x05
+#   DISPLAY_DEV=0x06 DOOR_SENSOR=0x07 SMOKE_SENSOR=0x08 MULTI_SENSOR=0x09
+#   HUMIDITY_SENSOR=0x0A FLOOD_SENSOR=0x0B GAS_SENSOR=0x0C
+#
+# IMPORTANTE: el endpoint HTTP de la central (central/src/http_endpoint.cpp)
+# RECHAZA con 400 cualquier POST cuyo "code" sea 0. Nunca uses code: "0".
+
+substitutions:
+  # --- EventCode (decimal, como string: ESPHome substitutions son texto) ---
+  EVENT_MOTION:        "1"
+  EVENT_DOOR_OPEN:     "2"
+  EVENT_DOOR_CLOSE:    "3"
+  EVENT_BUTTON_PRESS:  "4"
+  EVENT_BUTTON_RELEASE: "5"
+  EVENT_TIMBRE:        "6"
+  EVENT_SMOKE:         "7"
+  EVENT_FLOOD:         "8"
+  EVENT_TAMPER:        "9"
+  EVENT_LOW_BATTERY:   "10"   # 0x0A
+  EVENT_WINDOW_OPEN:   "11"   # 0x0B
+  EVENT_WINDOW_CLOSE:  "12"   # 0x0C
+  EVENT_VIBRATION:     "13"   # 0x0D
+  EVENT_GAS_DETECTED:  "14"   # 0x0E
+
+  # --- DeviceType (decimal) ---
+  DEVTYPE_DOOR_SENSOR: "7"    # 0x07
+  DEVTYPE_WINDOW:      "7"    # reutiliza DOOR_SENSOR; no hay WINDOW_SENSOR en el enum
+  DEVTYPE_MULTI:       "9"    # 0x09 MULTI_SENSOR

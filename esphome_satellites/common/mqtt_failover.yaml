@@ -1,0 +1,105 @@
+# mqtt_failover.yaml — Máquina de estados NORMAL/GRACE/EMERGENCY.
+#
+# Patrón del Camino A: el satélite publica por MQTT en operación normal, y
+# si el broker cae más de GRACE segundos, conmuta a HTTP contra el endpoint
+# /event del central C++ (canal de respaldo local). Al volver MQTT, regresa
+# a NORMAL. La histéresis (script con mode: restart) evita que una caída
+# transitoria de pocos segundos dispare el modo emergencia.
+#
+# Requiere de base.yaml los globals: node_state, mqtt_connected, boot_counter,
+# seq, pending_code, pending_value. Y las substitutions:
+#   central_ip, device_id_dec, friendly_name, dev_type (de alarm_codes.yaml).
+#
+# El nodo concreto llama a:
+#   - script.execute: send_mqtt   (cuando node_state == 2 / NORMAL)
+#   - script.execute: send_http   (cuando node_state == 4 / EMERGENCY)
+# tras fijar id(pending_code) e id(pending_value) en el on_state del sensor.
+
+mqtt:
+  broker: !secret mqtt_broker
+  username: !secret mqtt_user
+  password: !secret mqtt_pass
+  # El satélite publica su propio estado de disponibilidad en este topic,
+  # coherente con casa/iot/device_XX/status que usa el central para nodos C++.
+  birth_message:
+    topic: "casa/iot/device_${device_id_dec}/status"
+    payload: "online"
+    retain: true
+  will_message:
+    topic: "casa/iot/device_${device_id_dec}/status"
+    payload: "offline"
+    retain: true
+  on_connect:
+    then:
+      - lambda: 'id(mqtt_connected) = true;'
+      - script.execute: enter_normal
+  on_disconnect:
+    then:
+      - lambda: 'id(mqtt_connected) = false;'
+      - script.execute: grace_period
+
+http_request:
+  # Cliente HTTP usado por send_http. useragent/timeout conservadores.
+  useragent: "esphome-satellite/${node_name}"
+  timeout: 3s
+  verify_ssl: false
+
+script:
+  # Entra en NORMAL (hay MQTT). mode: restart cancela cualquier gracia activa.
+  - id: enter_normal
+    mode: restart
+    then:
+      - lambda: 'id(node_state) = 2;'
+      - logger.log: "node_state -> NORMAL (MQTT)"
+
+  # Periodo de gracia: cada on_disconnect lo reinicia (mode: restart). Si tras
+  # GRACE_SECONDS sigue sin MQTT, pasa a EMERGENCY.
+  - id: grace_period
+    mode: restart
+    then:
+      - lambda: 'id(node_state) = 3;'  # GRACE
+      - logger.log: "node_state -> GRACE (sin MQTT, esperando reconexion)"
+      - delay: ${grace_seconds}
+      - if:
+          condition:
+            lambda: 'return !id(mqtt_connected);'
+          then:
+            - lambda: 'id(node_state) = 4;'  # EMERGENCY
+            - logger.log: "node_state -> EMERGENCY (HTTP al central)"
+
+  # Envío por MQTT (operación normal). Publica estado retained + evento.
+  - id: send_mqtt
+    mode: queued
+    then:
+      - mqtt.publish:
+          topic: "casa/iot/device_${device_id_dec}/evento"
+          payload: !lambda |-
+            return to_string(id(pending_code)) + "|" + to_string(id(pending_value));
+          retain: false
+
+  # Envío por HTTP de emergencia. El payload lleva (src,boot,seq,code,val) para
+  # que el central deduplique por (src,boot,seq) igual que en UDP.
+  # OJO: el endpoint rechaza con 400 si src/boot/seq/code == 0.
+  - id: send_http
+    mode: queued
+    max_runs: 8
+    then:
+      - http_request.post:
+          url: "http://${central_ip}/event"
+          headers:
+            Content-Type: application/json
+          body: !lambda |-
+            char buf[192];
+            snprintf(buf, sizeof(buf),
+              "{\"v\":1,\"src\":%d,\"boot\":%u,\"seq\":%u,\"code\":%d,\"val\":%d,\"dev_type\":%s}",
+              (int)${device_id_dec}, (unsigned)id(boot_counter), (unsigned)id(seq),
+              id(pending_code), id(pending_value), "${dev_type}");
+            return std::string(buf);
+          on_response:
+            then:
+              - lambda: |-
+                  int code = response->status_code;
+                  if (code == 200)      ESP_LOGI("failover", "HTTP /event ACK (200)");
+                  else if (code == 409) ESP_LOGW("failover", "HTTP /event duplicado (409)");
+                  else if (code == 403) ESP_LOGW("failover", "HTTP /event rechazado (403)");
+                  else                  ESP_LOGW("failover", "HTTP /event status=%d", code);

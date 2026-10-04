@@ -1,0 +1,83 @@
+# ventana_cocina.yaml — Nodo satélite ESPHome: sensor de ventana (reed switch).
+#
+# Hardware: ESP8266 D1 mini + reed switch entre D2 y GND.
+# Rol: en NORMAL publica por MQTT; si el broker cae > grace_seconds, conmuta
+# a HTTP contra el endpoint /event del central C++ (ver common/mqtt_failover.yaml).
+#
+# device_id 66 (0x42) cae en el rango 0x40-0x5F ("telemetria") de la
+# convencion de IoTProtocol.h; es solo convencion, no restriccion de codigo.
+# El central lo registra como DOOR_SENSOR (no existe WINDOW_SENSOR en el enum).
+#
+# Compilar/subir:  esphome run ventana_cocina.yaml
+# Requiere esphome_satellites/secrets.yaml (ver secrets.yaml.example).
+
+substitutions:
+  node_name: "ventana-cocina"
+  friendly_name: "Ventana Cocina"
+  device_id_dec: "66"            # 0x42
+  central_ip: "192.168.0.201"    # local_IP de central/src/config.cpp (puerto 80)
+  dev_type: "7"                  # DOOR_SENSOR (AlarmProfile)
+  grace_seconds: "30s"
+
+packages:
+  codes:    !include common/alarm_codes.yaml
+  base:     !include common/base.yaml
+  failover: !include common/mqtt_failover.yaml
+
+binary_sensor:
+  - platform: gpio
+    id: ventana
+    name: "${friendly_name}"
+    device_class: window
+    pin:
+      number: D2
+      mode:
+        input: true
+        pullup: true
+      inverted: true   # cerrado (reed a GND) -> false ; abierto -> true
+    filters:
+      - delayed_on: 200ms
+      - delayed_off: 200ms
+    on_state:
+      then:
+        # 1) Fijar (code,value) ANTES de elegir transporte.
+        #    seq se incrementa aqui (en el flanco fisico), no en el envio,
+        #    para que un reintento del mismo flanco reuse el mismo seq y el
+        #    central lo deduplique.
+        - lambda: |-
+            id(seq) += 1;
+            if (x) {  // ventana abierta
+              id(pending_code)  = ${EVENT_WINDOW_OPEN};
+              id(pending_value) = 1;
+            } else {  // ventana cerrada
+              id(pending_code)  = ${EVENT_WINDOW_CLOSE};
+              id(pending_value) = 0;
+            }
+        # 2) Elegir transporte segun el estado de la maquina de failover.
+        - if:
+            condition:
+              lambda: 'return id(node_state) == 2;'   # NORMAL
+            then:
+              - script.execute: send_mqtt
+        - if:
+            condition:
+              lambda: 'return id(node_state) == 4;'   # EMERGENCY
+            then:
+              - script.execute: send_http
+        # En BOOT/TRY_MQTT/GRACE el evento no se envia (se descarta): es el
+        # comportamiento best-effort documentado del canal satelite.
+
+# Sensor de diagnostico opcional: expone el estado de la maquina a HA via API.
+text_sensor:
+  - platform: template
+    name: "${friendly_name} Transporte"
+    lambda: |-
+      switch (id(node_state)) {
+        case 0: return {"BOOT"};
+        case 1: return {"TRY_MQTT"};
+        case 2: return {"NORMAL (MQTT)"};
+        case 3: return {"GRACE"};
+        case 4: return {"EMERGENCY (HTTP)"};
+        default: return {"?"};
+      }
+    update_interval: 10s
